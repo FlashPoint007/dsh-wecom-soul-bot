@@ -1,0 +1,81 @@
+{
+  "name": "dsh-wecom-soul-bot",
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "description": "WeCom (企业微信) smart bot over the official long connection, with a persona, sender-identity tagging and long-term memory, for DeepSeek Harness. Group chats answer when @-mentioned. Merged from dsh-wecom-bot and dsh-soul-md.",
+  "license": "MIT",
+  "icon": "./icon.svg",
+  "main": "./dist/host/index.js",
+  "exports": {
+    ".": "./dist/host/index.js",
+    "./client": "./dist/client.js",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FlashPoint007/dsh-wecom-soul-bot.git"
+  },
+  "homepage": "https://github.com/FlashPoint007/dsh-wecom-soul-bot#readme",
+  "bugs": {
+    "url": "https://github.com/FlashPoint007/dsh-wecom-soul-bot/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "wecom",
+    "企业微信"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  },
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json",
+    "build:host": "tsc -p tsconfig.json",
+    "build:client": "tsc -p tsconfig.client.json && node scripts/build-client.mjs",
+    "build": "pnpm run clean && pnpm run build:host && pnpm run build:client",
+    "test": "pnpm run build && node --test --disable-warning=ExperimentalWarning test/*.test.js",
+    "verify": "pnpm run build && pnpm run typecheck && node --test --disable-warning=ExperimentalWarning test/*.test.js",
+    "prepublishOnly": "pnpm run verify",
+    "preview": "pnpm run build && node scripts/preview.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.18.4",
+    "@wecom/aibot-node-sdk": "1.0.7"
+  },
+  "devDependencies": {
+    "@types/node": "~24.10.1",
+    "@types/react": "~18.3.31",
+    "esbuild": "~0.25.12",
+    "react": "~18.3.1",
+    "react-dom": "~18.3.1",
+    "react-test-renderer": "~18.3.1",
+    "typescript": "~5.9.3"
+  }
+}

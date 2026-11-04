@@ -1,0 +1,4 @@
+# esbuild ships its native binary as an optional dependency; its install script
+# only verifies that binary, so the build works without running scripts.
+allowBuilds:
+  esbuild: false
