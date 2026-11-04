@@ -22,7 +22,7 @@
 
 ## 快速开始
 
-1. 安装：`dsh plugin --profile desktop add dsh-wecom-soul-bot@github:FlashPoint007/dsh-wecom-soul-bot`，或者克隆本仓库后安装本地绝对路径。然后重启 DSH。
+1. 安装：`git clone https://github.com/FlashPoint007/dsh-wecom-soul-bot && cd dsh-wecom-soul-bot && pnpm install && pnpm run build`，再执行 `dsh plugin --profile desktop add <克隆目录的绝对路径>`，然后重启 DSH。仓库不提交 `dist/`，所以必须先构建。
 2. 连接：打开插件页「连接」，填企业微信管理后台 → 智能机器人 → API 模式里的 **Bot ID** 和 **Secret**。Secret 存进 DSH 凭据库（`WECOM_SOUL_BOT_SECRET`），不写配置文件。
 3. 授权：把机器人拉进群，在群里 @ 它一次，群会出现在「待授权」里，把它加入分组。默认分组的工作区权限是「仅可查看」，**不要**为群聊放开写权限。
 4. 设置人设：插件页「人设与记忆」里填主人 userid（留空则沿用管理员列表），按需修改人设提示词。
