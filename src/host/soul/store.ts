@@ -24,7 +24,7 @@ export const MAX_MEMORY_FILE_CHARS = 16_000;
 export type MemoryScope = 'chat' | 'shared';
 
 export function defaultSoulSettings(): SoulSettings {
-  return { enabled: true, chatMode: true, memoryEnabled: true, persona: DEFAULT_PERSONA, ownerUserIds: [] };
+  return { enabled: true, chatMode: true, memoryEnabled: true, workMode: false, persona: DEFAULT_PERSONA, ownerUserIds: [] };
 }
 
 function owners(value: unknown): string[] {
@@ -47,6 +47,7 @@ export function normalizeSoulSettings(value: unknown): SoulSettings {
     enabled: flag('enabled', fallback.enabled),
     chatMode: flag('chatMode', fallback.chatMode),
     memoryEnabled: flag('memoryEnabled', fallback.memoryEnabled),
+    workMode: flag('workMode', fallback.workMode),
     persona: typeof raw.persona === 'string' ? raw.persona.slice(0, MAX_PERSONA_CHARS) : fallback.persona,
     ownerUserIds: owners(raw.ownerUserIds),
   };
@@ -59,7 +60,7 @@ export function validateSoulPatch(value: unknown): { ok: true; patch: SoulSettin
   const patch: { -readonly [K in keyof SoulSettingsPatch]: SoulSettingsPatch[K] } = {};
   for (const [key, item] of Object.entries(raw)) {
     switch (key) {
-      case 'enabled': case 'chatMode': case 'memoryEnabled':
+      case 'enabled': case 'chatMode': case 'memoryEnabled': case 'workMode':
         if (typeof item !== 'boolean') return { ok: false, error: `${key} 必须是开关值。` };
         patch[key] = item;
         break;

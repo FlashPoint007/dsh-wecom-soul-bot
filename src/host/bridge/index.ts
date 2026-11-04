@@ -302,10 +302,12 @@ export function createBridge(deps: BridgeDeps): Bridge {
       return;
     }
     const sender = { user: message.user, chat: message.chat, chatType: message.chatType };
-    deps.soul?.noteSender(sessionId, sender);
+    const requestId = randomUUID();
+    // Before submitting: the tool guard reads who is in this turn.
+    deps.soul?.noteSender(sessionId, sender, requestId);
     const text = deps.soul ? deps.soul.decorate(sender, content) : content;
     const request = {
-      requestId: randomUUID(), sessionId, mode: 'queue' as const,
+      requestId, sessionId, mode: 'queue' as const,
       content: [{ type: 'text' as const, text }],
     };
     // Register first: the turn may end before prompt() resolves.

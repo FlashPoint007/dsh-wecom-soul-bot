@@ -303,6 +303,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     } catch (error) {
       journal.write({ event: 'bridge.error', level: 'error', stage: 'turn-end', sessionId: session.id, error });
     }
+    soul.onTurnEnd(session.id, summary().promptIds);
     if (!rounds.hasPending(session.id) && !notified.length) return;
     const turn = summary();
     journal.write({

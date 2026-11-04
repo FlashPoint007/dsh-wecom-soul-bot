@@ -319,8 +319,16 @@ export interface SystemPromptService {
   section(section: PromptSection): (() => void) | void;
 }
 
+/** The slice of a tool execution a guard reads. */
+export interface ToolExecution {
+  readonly name: string;
+  readonly agent?: { readonly id?: string; readonly session?: { readonly id?: string } };
+}
+
 export interface ToolRegistry {
   register(tool: unknown): (() => void) | void;
+  /** Monotonic pre-execution guard: a returned string denies the call; no guard can force-allow. */
+  guard?(guard: (exec: ToolExecution) => string | undefined): (() => void) | void;
 }
 
 export interface HostContext extends DshEvents {

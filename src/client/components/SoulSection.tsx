@@ -111,6 +111,17 @@ export function SoulSection({ disabled }: { disabled: boolean }) {
             </span>
           </Field>
           <Field
+            label="工作模式"
+            hint={state.toolGuard
+              ? '开启后，只有主人发的消息能让机器人调用 skill 和工具（查日志、告警、nyx 打包、发版）。同一轮里只要有群友的消息，就只能用记忆工具。工具权限仍受分组的工作区权限和 DSH 审批约束。'
+              : '当前 DSH 不支持工具拦截（tools.guard），为安全起见工作模式不会生效，所有轮次都只能聊天。'}
+          >
+            <span className="wcb-switch-row">
+              <Switch checked={settings.workMode} disabled={busy} label="工作模式" onChange={next => void save({ workMode: next })} />
+              <span>{settings.workMode ? (state.toolGuard ? '已开启（仅主人）' : '已开启但未生效') : '已关闭（只聊天）'}</span>
+            </span>
+          </Field>
+          <Field
             label="长期记忆"
             hint={`共享记忆 ${state.memory.sharedEntries} 条。会话记忆只在对应的私聊或群里可见；共享记忆只能在主人私聊时写入。`}
           >

@@ -27,6 +27,12 @@ export interface SoulSettings {
   readonly chatMode: boolean;
   /** Long-term memory section and the wecom_memory_* tools. */
   readonly memoryEnabled: boolean;
+  /**
+   * Work mode: a turn made only of owner messages may use every tool the
+   * Session has (skills, shell, deploys). Any non-owner message in the turn
+   * drops it back to the memory tools. Off, every Bot turn is chat-only.
+   */
+  readonly workMode: boolean;
   /** Persona card (Markdown). */
   readonly persona: string;
   /** WeCom userids the persona treats as its owner; empty falls back to the administrators. */
@@ -46,6 +52,8 @@ export interface SoulStateView {
   readonly effectiveOwners: readonly string[];
   readonly ownersFromAdmins: boolean;
   readonly memory: SoulMemoryStats;
+  /** Whether DSH exposes the tool guard work mode relies on; without it every turn stays chat-only. */
+  readonly toolGuard: boolean;
 }
 
 export type SoulResponse =

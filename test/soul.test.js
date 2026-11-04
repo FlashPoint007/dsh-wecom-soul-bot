@@ -11,9 +11,13 @@ async function harness({ bindings = { 's-group': [{ kind: 'group', id: 'g1' }], 
   await store.load();
   const sections = new Map();
   const tools = new Map();
+  const guards = [];
   const ctx = {
     systemPrompt: { section(section) { sections.set(section.name, section); return () => sections.delete(section.name); } },
-    tools: { register(tool) { tools.set(tool.name, tool); return () => tools.delete(tool.name); } },
+    tools: {
+      register(tool) { tools.set(tool.name, tool); return () => tools.delete(tool.name); },
+      guard(fn) { guards.push(fn); return () => guards.splice(guards.indexOf(fn), 1); },
+    },
   };
   const soul = createSoulService({
     ctx, store, admins: () => admins, defineTool: fakeDefineTool,
@@ -22,7 +26,8 @@ async function harness({ bindings = { 's-group': [{ kind: 'group', id: 'g1' }], 
   const stop = soul.start();
   const render = (name, sessionId, origin) => sections.get(name).text({ agent: { id: sessionId, session: { id: sessionId, header: origin ? { origin } : {} } } });
   const exec = sessionId => ({ agent: { id: sessionId, session: { id: sessionId } } });
-  return { store, soul, sections, tools, render, exec, stop };
+  const check = (sessionId, name) => guards.map(g => g({ name, agent: { id: sessionId, session: { id: sessionId } } })).find(r => r !== undefined);
+  return { store, soul, sections, tools, guards, check, render, exec, stop };
 }
 
 test('the persona reaches only Sessions a WeCom binding owns', async () => {
@@ -61,10 +66,10 @@ test('owners default to the administrators until the page names them', async () 
 test('chat memory stays in its conversation; shared memory is written only in the owner private chat', async () => {
   const h = await harness();
   const remember = h.tools.get('wecom_memory_remember');
-  h.soul.noteSender('s-group', { user: 'bob', chat: 'g1', chatType: 'group' });
+  h.soul.noteSender('s-group', { user: 'bob', chat: 'g1', chatType: 'group' }, 'r1');
   await remember.execute({ content: '群里周五聚餐' }, h.exec('s-group'));
   await assert.rejects(remember.execute({ content: '主人爱喝冰美式', scope: 'shared' }, h.exec('s-group')), /主人私聊/);
-  h.soul.noteSender('s-alice', { user: 'alice', chat: 'alice', chatType: 'single' });
+  h.soul.noteSender('s-alice', { user: 'alice', chat: 'alice', chatType: 'single' }, 'r2');
   await assert.rejects(remember.execute({ content: 'x 喜欢猫', scope: 'shared' }, h.exec('s-alice')), /主人私聊/, 'a non-owner private chat cannot write shared memory');
   assert.match(h.render(SECTION_CONTEXT, 's-group'), /群里周五聚餐/);
   assert.doesNotMatch(h.render(SECTION_CONTEXT, 's-alice'), /群里周五聚餐/, 'group memory never shows in a private chat');
@@ -75,7 +80,7 @@ test('the owner writes shared memory that every bound conversation reads, and ca
   const h = await harness({ bindings: { 's-owner': [{ kind: 'user', id: 'owner' }], 's-group': [{ kind: 'group', id: 'g1' }] } });
   const remember = h.tools.get('wecom_memory_remember');
   const forget = h.tools.get('wecom_memory_forget');
-  h.soul.noteSender('s-owner', { user: 'owner', chat: 'owner', chatType: 'single' });
+  h.soul.noteSender('s-owner', { user: 'owner', chat: 'owner', chatType: 'single' }, 'r3');
   await remember.execute({ content: '主人爱喝冰美式', scope: 'shared' }, h.exec('s-owner'));
   assert.match(h.render(SECTION_CONTEXT, 's-group'), /主人爱喝冰美式/);
   assert.equal(h.soul.state().memory.sharedEntries, 1);
@@ -87,7 +92,7 @@ test('the owner writes shared memory that every bound conversation reads, and ca
 test('secrets are refused whoever asks', async () => {
   const h = await harness();
   const remember = h.tools.get('wecom_memory_remember');
-  h.soul.noteSender('s-alice', { user: 'alice', chat: 'alice', chatType: 'single' });
+  h.soul.noteSender('s-alice', { user: 'alice', chat: 'alice', chatType: 'single' }, 'r4');
   for (const text of ['我的密码是 hunter2', 'key sk-abcdefghijklmnopqrstuv', '6222020200112233445']) {
     assert.equal(looksSecret(text), true, text);
     await assert.rejects(remember.execute({ content: text }, h.exec('s-alice')), /密码或密钥/);
@@ -109,4 +114,48 @@ test('settings are re-typed from disk and page patches are validated field by fi
   assert.equal(validateSoulPatch({ unknown: true }).ok, false);
   assert.equal(validateSoulPatch({ ownerUserIds: ['   '] }).ok, false);
   assert.deepEqual(validateSoulPatch({ ownerUserIds: [' a ', 'a'], persona: 'p' }), { ok: true, patch: { ownerUserIds: ['a'], persona: 'p' } });
+});
+
+test('work mode is off by default: every non-memory tool is denied, memory tools stay usable', async () => {
+  const h = await harness();
+  h.soul.noteSender('s-alice', { user: 'owner', chat: 'owner', chatType: 'single' }, 'p1');
+  assert.match(h.check('s-alice', 'bash'), /只能使用记忆工具/);
+  assert.equal(h.check('s-alice', 'wecom_memory_remember'), undefined);
+  assert.equal(h.check('some-gui-session', 'bash'), undefined, 'operator Sessions are never touched');
+  assert.match(h.render(SECTION_CONTEXT, 's-alice'), /这一轮你只能聊天/);
+});
+
+test('work mode lets an owner-only turn use every tool, in a private chat or a group', async () => {
+  const h = await harness();
+  await h.store.update({ workMode: true });
+  assert.equal(h.soul.state().toolGuard, true);
+  h.soul.noteSender('s-group', { user: 'owner', chat: 'g1', chatType: 'group' }, 'p1');
+  assert.equal(h.check('s-group', 'bash'), undefined);
+  assert.equal(h.check('s-group', 'skill'), undefined);
+  assert.match(h.render(SECTION_CONTEXT, 's-group'), /消息全部来自主人本人/);
+});
+
+test('one non-owner message in flight drops the whole turn to chat-only, until DSH consumes it', async () => {
+  const h = await harness();
+  await h.store.update({ workMode: true });
+  h.soul.noteSender('s-group', { user: 'owner', chat: 'g1', chatType: 'group' }, 'p1');
+  h.soul.noteSender('s-group', { user: 'mallory', chat: 'g1', chatType: 'group' }, 'p2');
+  assert.match(h.check('s-group', 'bash'), /只能使用记忆工具/, 'mallory rides on the owner turn: refused');
+  h.soul.onTurnEnd('s-group', ['p1', 'p2']);
+  h.soul.noteSender('s-group', { user: 'owner', chat: 'g1', chatType: 'group' }, 'p3');
+  assert.equal(h.check('s-group', 'bash'), undefined, 'the next owner-only turn may work again');
+  h.soul.onTurnEnd('s-group', ['p3']);
+  h.soul.noteSender('s-group', { user: 'mallory', chat: 'g1', chatType: 'group' }, 'p4');
+  assert.match(h.check('s-group', 'bash'), /只能使用记忆工具/);
+});
+
+test('without a DSH tool guard, work mode never takes effect', async () => {
+  const store = createSoulStore({ directory: scratchDirectory() });
+  await store.load();
+  await store.update({ workMode: true });
+  const soul = createSoulService({ ctx: { tools: { register() {} } }, store, admins: () => ['owner'], bindings: { forSession: () => [{ kind: 'user', id: 'owner' }] } });
+  soul.start();
+  soul.noteSender('s', { user: 'owner', chat: 'owner', chatType: 'single' }, 'p1');
+  assert.equal(soul.workAllowed('s'), false);
+  assert.equal(soul.state().toolGuard, false);
 });
