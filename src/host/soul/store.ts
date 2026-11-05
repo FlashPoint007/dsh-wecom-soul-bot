@@ -55,7 +55,7 @@ export interface ProactiveState {
 
 export function defaultSoulSettings(): SoulSettings {
   return {
-    enabled: true, chatMode: true, memoryEnabled: true, workMode: false,
+    enabled: true, chatMode: true, memoryEnabled: true, workMode: false, autoSteer: false,
     persona: DEFAULT_PERSONA, ownerUserIds: [],
     halfLifeDays: 7,
     remindersEnabled: true,
@@ -81,7 +81,7 @@ const NUMBER_FIELDS = {
 } as const satisfies Record<string, readonly [number, number, boolean]>;
 
 type NumberField = keyof typeof NUMBER_FIELDS;
-const BOOLEAN_FIELDS = ['enabled', 'chatMode', 'memoryEnabled', 'workMode', 'remindersEnabled', 'proactiveEnabled'] as const;
+const BOOLEAN_FIELDS = ['enabled', 'chatMode', 'memoryEnabled', 'workMode', 'autoSteer', 'remindersEnabled', 'proactiveEnabled'] as const;
 type BooleanField = typeof BOOLEAN_FIELDS[number];
 
 function owners(value: unknown): string[] {
@@ -113,6 +113,7 @@ export function normalizeSoulSettings(value: unknown): SoulSettings {
     chatMode: flag('chatMode'),
     memoryEnabled: flag('memoryEnabled'),
     workMode: flag('workMode'),
+    autoSteer: flag('autoSteer'),
     persona: typeof raw.persona === 'string' ? raw.persona.slice(0, MAX_PERSONA_CHARS) : fallback.persona,
     ownerUserIds: owners(raw.ownerUserIds),
     halfLifeDays: num('halfLifeDays'),

@@ -309,6 +309,26 @@ export function createBridge(deps: BridgeDeps): Bridge {
     round.sessionTitle = info.title;
     if (info.workspace) round.workspace = info.workspace;
     const chatMode = Boolean(deps.soul?.chatMode() && deps.soul.bound(sessionId));
+    // Auto-steer: an owner's plain text joins a turn that is already running,
+    // like /steer, instead of queueing a new turn behind it. Images always queue.
+    if (!images.length && deps.controls && deps.soul?.autoSteer(message.user) && deps.soul.bound(sessionId)
+      && !content.startsWith('/') && info.running) {
+      const steerId = randomUUID();
+      const sender = { user: message.user, chat: message.chat, chatType: message.chatType };
+      deps.soul.noteSender(sessionId, sender, steerId, content);
+      try {
+        const steered = await deps.controls.steer(sessionId, deps.soul.decorate(sender, content), steerId);
+        if (steered) {
+          journal.write({ event: 'wecom.autosteer', roundId: round.id, sessionId, requestId: steerId, chatId: message.chat, userId: message.user });
+          if (!chatMode) await reply(message, round, title('💬', '已插入正在运行的回合'));
+          rounds.complete(round, 'command', { response: { reason: 'auto-steered' } });
+          return;
+        }
+      } catch (error) {
+        journal.write({ event: 'wecom.autosteer', level: 'warn', roundId: round.id, sessionId, error });
+      }
+      // The turn ended in between, or steering failed: fall through and queue normally.
+    }
     // The callback req_id is short-lived: acknowledge before activating the Session.
     // In chat mode the persona answers by itself when the turn ends, so no receipt.
     if (!chatMode) {

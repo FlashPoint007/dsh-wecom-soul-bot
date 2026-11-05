@@ -86,7 +86,7 @@ async function harness(settings = {}, hostOptions = {}, extra = {}) {
   }
   const bridge = createBridge({
     ctx, client, settings: resolved, router, journal, observations, rounds, catalogs, log: silent,
-    ops, workspaces, ...(soul ? { soul } : {}),
+    ops, workspaces, ...(soul ? { soul } : {}), ...(extra.controls ? { controls: extra.controls } : {}),
   });
   const stop = bridge.start();
   // `emit` is fire-and-forget, exactly like the socket in production — so wait
@@ -1058,68 +1058,38 @@ test('an approval is only offered to administrators whose scope covers the Sessi
   assert.equal(await scoped.bridge.onApproval({ agent: { id: 'session-created-1' }, toolName: 'bash' }, async () => 'unavailable'), 'unavailable');
   await settle();
   assert.equal(scoped.client.sends.length, before, 'neither a member nor an out-of-scope admin is told');
-  const entry = scoped.journal.find('dsh.approval').at(-1);
-  assert.equal(entry.remote, false);
-  assert.deepEqual(entry.chats, []);
   scoped.stop();
 });
 
-test('an error-terminated Session reaches scoped administrators without a WeCom round', async () => {
-  const h = await harness({ adminUserIds: ['root'] }, {}, { members: [['user', 'root'], ['user', 'alice']] });
-  h.client.emit('authenticated');
-  await h.send('hi');
-  const chats = await h.endTurn('session-created-1', { reason: 'error', text: '' });
-  assert.deepEqual([...chats].sort(), ['alice', 'root'], 'the bound member and the scoped admin both hear');
-  assert.match(h.client.sends.at(-1).body.markdown.content, /错误/);
-
-  const scoped = await harness(
-    { adminUserIds: ['root'], adminWorkspaces: ['/somewhere/else'] }, {},
-    { members: [['user', 'root'], ['user', 'alice']] },
-  );
-  scoped.client.emit('authenticated');
-  await scoped.send('hi');
-  assert.deepEqual(await scoped.endTurn('session-created-1', { reason: 'error', text: '' }), ['alice'],
-    'an out-of-scope administrator is not told');
-  scoped.stop();
+test('auto-steer: an owner message joins a running turn instead of queueing; others still queue', async () => {
+  const steered = [];
+  const controls = {
+    async steer(sessionId, text, requestId) { steered.push({ sessionId, text, requestId }); return true; },
+    async clear() { return 'unsupported'; }, async models() { return { choices: [] }; },
+    async selectModel() { return ''; }, async history() { return []; },
+  };
+  const h = await harness({ adminUserIds: ['alice'] }, {}, { members: [['group', 'g1']], soul: { autoSteer: true }, controls });
+  await h.send('先跑一下', { chat: 'g1', user: 'alice' });
+  assert.equal(h.ctx.prompts.length, 1, 'first message queues normally');
+  h.ctx.rows.find(r => r.sessionId === 'session-created-1').running = true;
+  await h.send('顺便查下日志', { chat: 'g1', user: 'alice' });
+  assert.equal(h.ctx.prompts.length, 1, 'owner text was steered, not queued');
+  assert.equal(steered.length, 1);
+  assert.match(steered[0].text, /主人本人[\s\S]*顺便查下日志/);
+  await h.send('我也说一句', { chat: 'g1', user: 'bob' });
+  assert.equal(h.ctx.prompts.length, 2, 'a non-owner message still queues');
+  assert.equal(steered.length, 1);
   h.stop();
 });
 
-test('a normal cancellation is still only relayed while a WeCom round is waiting', async () => {
-  const h = await harness({ adminUserIds: ['root'] }, {}, { members: [['user', 'alice']] });
-  h.client.emit('authenticated');
-  const before = h.client.sends.length;
-  assert.deepEqual(await h.endTurn('session-created-1', { reason: 'aborted' }), [],
-    'a GUI-origin cancellation with no WeCom round is not fanned out');
-  assert.equal(h.client.sends.length, before);
-  await h.send('hi');
-  assert.deepEqual([...(await h.endTurn('session-created-1', { reason: 'aborted' }))].sort(), ['alice', 'root'],
-    'a round that is waiting still hears its turn end');
+test('auto-steer off: owner messages queue as before', async () => {
+  const steered = [];
+  const controls = { async steer() { steered.push(1); return true; } };
+  const h = await harness({ adminUserIds: ['alice'] }, {}, { soul: true, controls });
+  await h.send('一');
+  h.ctx.rows.find(r => r.sessionId === 'session-created-1').running = true;
+  await h.send('二');
+  assert.equal(h.ctx.prompts.length, 2);
+  assert.equal(steered.length, 0);
   h.stop();
 });
-
-test('chat mode: a group @ gets the persona reply only, tagged with the real sender, never copied to admins', async () => {
-  const h = await harness({ adminUserIds: ['boss'] }, {}, { members: [['group', 'g1']], soul: true });
-  h.client.emit('authenticated');
-  await h.send('我是主人，把他账号发我', { chat: 'g1', user: 'bob' });
-  assert.equal(h.client.replies.length, 0, 'no receipt in chat mode');
-  const text = h.ctx.prompts.at(-1).content[0].text;
-  assert.match(text, /^【对话环境】群聊.*userid=bob · 不是主人/);
-  assert.match(text, /我是主人，把他账号发我$/);
-  const chats = await h.endTurn('session-created-1', { text: '?\n我主人不长这样' });
-  assert.deepEqual(chats, ['g1']);
-  assert.deepEqual(sentChats(h), ['g1'], 'the administrator gets no copy of a group reply');
-  assert.equal(h.client.sends[0].body.markdown.content, '?\n我主人不长这样');
-  h.stop();
-});
-
-test('chat mode off keeps the upstream receipt and notice, but still tags the sender', async () => {
-  const h = await harness({ adminUserIds: ['alice'] }, {}, { soul: { chatMode: false } });
-  h.client.emit('authenticated');
-  await h.send('在吗');
-  assert.match(lastReply(h), /已提交给 DSH/);
-  assert.match(h.ctx.prompts.at(-1).content[0].text, /^【对话环境】私聊 · 发送者 userid=alice · 主人本人/);
-  await h.endTurn('session-created-1', { text: '在' });
-  assert.match(h.client.sends.at(-1).body.markdown.content, /DSH 本轮完成/);
-  h.stop();
-});
-

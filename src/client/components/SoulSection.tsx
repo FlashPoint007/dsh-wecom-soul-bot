@@ -122,6 +122,15 @@ export function SoulSection({ disabled }: { disabled: boolean }) {
             </span>
           </Field>
           <Field
+            label="运行中自动插话"
+            hint="默认关闭。开启后，机器人正在跑一轮任务时，主人发来的纯文字会直接插进这一轮（等同 /steer），不再排队等下一轮。群友消息、图片和命令照常排队。"
+          >
+            <span className="wcb-switch-row">
+              <Switch checked={settings.autoSteer} disabled={busy} label="运行中自动插话" onChange={next => void save({ autoSteer: next })} />
+              <span>{settings.autoSteer ? '已开启（仅主人）' : '已关闭（排队）'}</span>
+            </span>
+          </Field>
+          <Field
             label="长期记忆"
             hint={`核心 ${state.memory.coreEntries} 条（不会忘）· 近期 ${state.memory.episodicEntries} 条（其中 ${state.memory.fadedEntries} 条已淡忘，可被回忆找回）· 共享 ${state.memory.sharedEntries} 条。近期记忆按遗忘曲线变淡，半衰期 ${settings.halfLifeDays} 天，重要度和每次回忆都会让它忘得更慢。`}
           >

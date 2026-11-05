@@ -33,6 +33,11 @@ export interface SoulSettings {
    * drops it back to the memory tools. Off, every Bot turn is chat-only.
    */
   readonly workMode: boolean;
+  /**
+   * Auto-steer: while a turn is running, an owner's plain text message joins
+   * that turn (like /steer) instead of queueing a new one. Off by default.
+   */
+  readonly autoSteer: boolean;
   /** Persona card (Markdown). */
   readonly persona: string;
   /** WeCom userids the persona treats as its owner; empty falls back to the administrators. */

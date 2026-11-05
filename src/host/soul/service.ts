@@ -57,6 +57,8 @@ export interface SoulService {
   start(): () => void;
   /** Whether replies should be the model's text only. */
   chatMode(): boolean;
+  /** Whether a running turn should absorb this sender's plain text (auto-steer is owner-only). */
+  autoSteer(user: string): boolean;
   /** Record the sender (and text) of the prompt requestId about to be submitted to sessionId. */
   noteSender(sessionId: string, sender: Sender, requestId: string, text?: string): void;
   /** Forget the prompts a finished turn consumed (promptIds are the prompt request ids). */
@@ -232,6 +234,7 @@ export function createSoulService(options: SoulServiceOptions): SoulService {
       return () => { for (const off of disposers.splice(0)) off(); senders.clear(); pending.clear(); lastText.clear(); };
     },
     chatMode: () => store.settings().enabled && store.settings().chatMode,
+    autoSteer: user => store.settings().enabled && store.settings().autoSteer && isOwner(user),
     noteSender(sessionId, sender, requestId, text) {
       senders.set(sessionId, sender);
       if (typeof text === 'string') lastText.set(sessionId, text.slice(0, 2000));
