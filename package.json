@@ -1,9 +1,9 @@
 {
   "name": "dsh-wecom-soul-bot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "packageManager": "pnpm@11.22.0",
-  "description": "WeCom (企业微信) smart bot over the official long connection, with a persona, sender-identity tagging and long-term memory, for DeepSeek Harness. Group chats answer when @-mentioned. Merged from dsh-wecom-bot and dsh-soul-md.",
+  "description": "WeCom (企业微信) smart bot for DeepSeek Harness over the official long connection: persona, sender identity tags, three-layer memory with a forgetting curve, reminders, opt-in proactive chat and owner-only work mode. Group chats answer when @-mentioned.",
   "license": "MIT",
   "icon": "./icon.svg",
   "main": "./dist/host/index.js",

@@ -8,3 +8,4 @@ node_modules/
 # README links them, the generated HTML is not.
 preview/index.html
 dist/
+*.tgz
