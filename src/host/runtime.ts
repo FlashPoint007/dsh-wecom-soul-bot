@@ -33,6 +33,7 @@ import { SCHEDULER_USER } from './soul/rules.js';
 import { isSkipReply } from './soul/service.js';
 import { createHostSessionControls } from './session-controls.js';
 import { createPendingLedger, outcomeOf } from './pending.js';
+import { BIND_EVENT, bindingChanges, createDeliveryService, UNBIND_EVENT, type WecomDeliveryService } from './delivery-service.js';
 import { createSoulStore, validateSoulPatch, type SoulStore } from './soul/store.js';
 import { join } from 'node:path';
 import {
@@ -89,6 +90,8 @@ export interface Runtime {
   current(): Bridge | undefined;
   readonly soul: SoulService;
   readonly soulStore: SoulStore;
+  /** Host service for other plugins: proactive delivery and session -> conversation lookup. */
+  readonly delivery: WecomDeliveryService;
   /** Run one scheduler tick now (tests and manual triggers). */
   tickScheduler(): Promise<void>;
   /** Apply one persona/memory settings edit from the page. */
@@ -188,6 +191,30 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   });
   let stopScheduler: (() => void) | undefined;
   const pending = createPendingLedger({ file: join(pluginHome(), 'pending.json') });
+  const delivery = createDeliveryService({
+    bindings: () => store.bindings(),
+    get: key => store.get(key),
+    forSession: sessionId => store.forSession(sessionId),
+    label: key => store.label(key),
+    lastSender: sessionId => soul.lastSender(sessionId),
+    notify(chat, text) {
+      if (!bridge || status.connection().phase !== 'online') return false;
+      bridge.notify(chat, text, 'turn-complete');
+      return true;
+    },
+    journal,
+  });
+  /** Announce binding changes the way dsh-im does, so other plugins can keep a session -> identity table. */
+  let lastBindings = [] as ReturnType<typeof store.bindings>;
+  const announceBindings = () => {
+    const now = store.bindings();
+    const { bound, unbound } = bindingChanges(lastBindings, now);
+    lastBindings = now;
+    const emit = (ctx as unknown as { emit?(name: string, payload: unknown): void }).emit;
+    if (typeof emit !== 'function') return;
+    for (const b of unbound) { try { emit.call(ctx, UNBIND_EVENT, Object.freeze({ channel: 'wecom', bindingKey: b.kind + ':' + b.id, chatId: b.id, chatType: b.kind === 'group' ? 'group' : 'dm', sessionId: b.sessionId })); } catch { /* subscriber failure */ } }
+    for (const b of bound) { try { emit.call(ctx, BIND_EVENT, Object.freeze({ channel: 'wecom', bindingKey: b.kind + ':' + b.id, chatId: b.id, chatType: b.kind === 'group' ? 'group' : 'dm', sessionId: b.sessionId, senderId: soul.lastSender(b.sessionId) ?? null })); } catch { /* subscriber failure */ } }
+  };
   const controls = createHostSessionControls({
     ctx, models,
     async running(sessionId) {
@@ -349,6 +376,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       journal.write({ event: 'bridge.error', level: 'error', stage: 'turn-end', sessionId: session.id, error });
     }
     soul.onTurnEnd(session.id, summary().promptIds);
+    announceBindings();
     void pending.remove(summary().promptIds).catch(() => {});
     if (!rounds.hasPending(session.id) && !notified.length) return;
     const turn = summary();
@@ -441,7 +469,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   }
 
   return {
-    observations, rounds, status, catalogs, store, soul, soulStore,
+    observations, rounds, status, catalogs, store, soul, soulStore, delivery,
     tickScheduler: () => scheduler.tick(),
     current: () => bridge,
     async applySoul(patch) {
@@ -473,6 +501,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       await soulStore.load();
       stopSoul = soul.start();
       stopScheduler = scheduler.start();
+      lastBindings = store.bindings();
       schedule();
       await queue;
       // Deliver replies that finished while we were down, once the socket is up.

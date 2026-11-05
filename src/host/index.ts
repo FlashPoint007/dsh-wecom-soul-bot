@@ -69,6 +69,11 @@ export function apply(ctx: HostContext, config: PluginConfig): void {
     const removeState = ctx.connection.fetch.register(stateRoute(runtime));
     const removeStore = ctx.connection.fetch.register(storeRoute(runtime));
     const removeSoul = ctx.connection.fetch.register(soulRoute(runtime));
+    // Other plugins reach WeCom through this Bot, like dsh-im's dshIm service.
+    const provide = (ctx as unknown as { provide?(name: string, value: unknown): void }).provide;
+    if (typeof provide === 'function') {
+      try { provide.call(ctx, 'wecomSoulBot', runtime.delivery); } catch { log.warn('wecomSoulBot service could not be provided'); }
+    }
     try {
       await runtime.start();
     } catch (error) {

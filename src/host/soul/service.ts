@@ -69,6 +69,8 @@ export interface SoulService {
   decorateScheduled(kind: ScheduledKind, chatType: 'single' | 'group', detail: string): string;
   isOwner(user: string): boolean;
   owners(): readonly string[];
+  /** Last WeCom userid that sent a message into this Session (scheduler turns excluded). */
+  lastSender(sessionId: string): string | undefined;
   /** Whether a Session belongs to a WeCom conversation. */
   bound(sessionId: string | undefined): boolean;
   state(): SoulStateView;
@@ -272,6 +274,10 @@ export function createSoulService(options: SoulServiceOptions): SoulService {
     },
     isOwner,
     owners,
+    lastSender(sessionId) {
+      const s = senders.get(sessionId);
+      return s && s.user !== SCHEDULER_USER ? s.user : undefined;
+    },
     bound,
     state() {
       const explicit = store.settings().ownerUserIds;
