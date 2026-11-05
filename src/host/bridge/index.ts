@@ -30,6 +30,7 @@ import { ackSummary, createOutbox, type NoticeKind } from './outbox.js';
 import { createAccessPolicy } from './policy.js';
 import { createSelectionStore } from './selection.js';
 import { isSkipReply, type SoulService } from '../soul/service.js';
+import { imagePartsOf, loadImages, type PromptBlock } from './images.js';
 import type { HostSessionControls } from '../session-controls.js';
 
 /**
@@ -46,7 +47,8 @@ import type { HostSessionControls } from '../session-controls.js';
  * process started.
  */
 
-export type BridgeClient = Pick<WSClient, 'on' | 'connect' | 'disconnect' | 'removeAllListeners' | 'sendMessage' | 'replyStream'>;
+export type BridgeClient = Pick<WSClient, 'on' | 'connect' | 'disconnect' | 'removeAllListeners' | 'sendMessage' | 'replyStream'>
+  & Partial<Pick<WSClient, 'downloadFile'>>;
 
 export interface BridgeDeps {
   readonly ctx: Pick<HostContext, 'on' | 'sessionController'>;
@@ -283,7 +285,7 @@ export function createBridge(deps: BridgeDeps): Bridge {
     } } : {}),
   };
 
-  async function submitPrompt(message: InboundMessage, round: Round, content: string): Promise<void> {
+  async function submitPrompt(message: InboundMessage, round: Round, content: string, images: readonly PromptBlock[] = []): Promise<void> {
     const ticket = generation;
     const target = await routeTarget(message);
     if (stale(ticket)) return;
@@ -331,7 +333,7 @@ export function createBridge(deps: BridgeDeps): Bridge {
     const text = deps.soul ? deps.soul.decorate(sender, content) : content;
     const request = {
       requestId, sessionId, mode: 'queue' as const,
-      content: [{ type: 'text' as const, text }],
+      content: [{ type: 'text' as const, text }, ...images] as PromptBlock[],
     };
     // Register first: the turn may end before prompt() resolves.
     rounds.awaitTurn(round, request.requestId);
@@ -472,8 +474,29 @@ export function createBridge(deps: BridgeDeps): Bridge {
     // commands and plain messages must never implicitly add anyone to a group.
     const ticket = generation;
     if (stale(ticket)) return;
+    if (message.msgtype === 'image' || message.msgtype === 'mixed') {
+      const parts = imagePartsOf(message.frame.body);
+      const download = client.downloadFile?.bind(client);
+      if (!parts.images.length || !download) {
+        await reply(message, round, `${title('⚠️', '这张图片读不到')}\n\n可以换个格式再发，或者用文字描述一下。`);
+        rounds.complete(round, 'unsupported');
+        return;
+      }
+      const { blocks, failed } = await loadImages(parts.images, download);
+      if (stale(ticket)) return;
+      journal.write({ event: 'wecom.images', roundId: round.id, images: parts.images.length, loaded: blocks.length, failed });
+      if (!blocks.length) {
+        await reply(message, round, `${title('⚠️', '图片下载失败')}\n\n稍后再发一次试试。`);
+        rounds.complete(round, 'unsupported');
+        return;
+      }
+      const note = (failed ? '（另有 ' + failed + ' 张图片没能读取）' : '');
+      const text = (parts.text || '[对方发来 ' + blocks.length + ' 张图片]') + note;
+      await submitPrompt(message, round, text, blocks);
+      return;
+    }
     if (message.msgtype !== 'text') {
-      await reply(message, round, `${title('⚠️', '目前只支持文本消息')}\n\n图片、语音、文件暂时无法提交给 DSH。`);
+      await reply(message, round, `${title('⚠️', '目前只支持文字和图片')}\n\n语音、文件暂时无法提交给 DSH。`);
       rounds.complete(round, 'unsupported');
       return;
     }

@@ -83,7 +83,10 @@ export interface PromptRequest {
   readonly sessionId: string;
   /** queue: a new turn after the current one; steer: injected into the running turn. */
   readonly mode: 'queue' | 'steer';
-  readonly content: readonly { readonly type: 'text'; readonly text: string }[];
+  readonly content: readonly (
+    | { readonly type: 'text'; readonly text: string }
+    | { readonly type: 'image'; readonly mediaType: string; readonly data: string; readonly name?: string }
+  )[];
 }
 
 /** One row of `sessionController.list`; every field but the id may be absent. */
