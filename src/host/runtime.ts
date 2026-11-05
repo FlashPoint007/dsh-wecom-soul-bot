@@ -30,7 +30,9 @@ import { createWorkspaceService, pluginWorkspacePath } from './workspaces.js';
 import { createSoulService, type SoulService } from './soul/service.js';
 import { createSoulScheduler } from './soul/scheduler.js';
 import { SCHEDULER_USER } from './soul/rules.js';
+import { isSkipReply } from './soul/service.js';
 import { createHostSessionControls } from './session-controls.js';
+import { createPendingLedger, outcomeOf } from './pending.js';
 import { createSoulStore, validateSoulPatch, type SoulStore } from './soul/store.js';
 import { join } from 'node:path';
 import {
@@ -185,6 +187,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     },
   });
   let stopScheduler: (() => void) | undefined;
+  const pending = createPendingLedger({ file: join(pluginHome(), 'pending.json') });
   const controls = createHostSessionControls({
     ctx, models,
     async running(sessionId) {
@@ -317,7 +320,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     });
     const created = createBridge({
       ctx, client, settings, router, log, journal, observations, rounds, catalogs, status, scrub,
-      ops: sessionOps, workspaces, soul, controls,
+      ops: sessionOps, workspaces, soul, controls, pending,
       brokeredInteractions: Boolean(interactionTransport), notificationOnly: !interactionTransport,
     });
     stopBridge = created.start();
@@ -346,6 +349,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       journal.write({ event: 'bridge.error', level: 'error', stage: 'turn-end', sessionId: session.id, error });
     }
     soul.onTurnEnd(session.id, summary().promptIds);
+    void pending.remove(summary().promptIds).catch(() => {});
     if (!rounds.hasPending(session.id) && !notified.length) return;
     const turn = summary();
     journal.write({
@@ -355,6 +359,39 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       notifiedChats: notified,
     });
     rounds.onTurnEnd(turn, notified);
+  }
+
+  /**
+   * After a restart: replies whose turn ended while the plugin was stopped are
+   * delivered once, late. A prompt still running is left for its own turn/end; one
+   * DSH never consumed, or one whose log cannot be read, is dropped (no guessing).
+   */
+  async function catchUp(): Promise<void> {
+    await pending.load();
+    const entries = [...pending.entries()];
+    if (!entries.length) return;
+    const sessionsStore = ctx.get?.('sessions') as { get?(id: string): { snapshotEvents?(): readonly SessionEvent[] } | undefined } | undefined;
+    const settled: string[] = [];
+    for (const entry of entries) {
+      let events: readonly SessionEvent[] | undefined;
+      try {
+        events = sessionsStore?.get?.(entry.sessionId)?.snapshotEvents?.();
+        if (!events) {
+          const resolved = await ctx.sessionController.resolveAgent(entry.sessionId);
+          if ('agent' in resolved) events = (resolved.agent as { session?: { snapshotEvents?(): readonly SessionEvent[] } }).session?.snapshotEvents?.();
+        }
+      } catch { /* unreadable: dropped below */ }
+      const outcome = events ? outcomeOf(events, entry.requestId) : { state: 'unconsumed' as const };
+      if (outcome.state === 'running') continue;
+      settled.push(entry.requestId);
+      if (outcome.state !== 'ended' || outcome.reason !== 'completed' || !outcome.text || isSkipReply(outcome.text)) {
+        journal.write({ event: 'wecom.deferred.dropped', sessionId: entry.sessionId, requestId: entry.requestId, state: outcome.state });
+        continue;
+      }
+      bridge?.notify(entry.chat, outcome.text, 'turn-complete');
+      journal.write({ event: 'wecom.deferred.sent', sessionId: entry.sessionId, requestId: entry.requestId, chatId: entry.chat });
+    }
+    await pending.remove(settled);
   }
 
   function onSessionEvent(session: SessionHandle, event: SessionEvent): void {
@@ -438,6 +475,11 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       stopScheduler = scheduler.start();
       schedule();
       await queue;
+      // Deliver replies that finished while we were down, once the socket is up.
+      void (async () => {
+        for (let i = 0; i < 30 && status.connection().phase !== 'online' && !disposed; i++) await new Promise(r => setTimeout(r, 1000));
+        if (!disposed) await catchUp().catch(error => journal.write({ event: 'bridge.error', level: 'warn', stage: 'catch-up', error }));
+      })();
       await interactionTransport?.start();
     },
     async stop() {

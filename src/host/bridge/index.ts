@@ -72,6 +72,8 @@ export interface BridgeDeps {
   readonly soul?: SoulService;
   /** steer / clear / model / history; omitted, those commands answer "unsupported". */
   readonly controls?: HostSessionControls;
+  /** Persist submitted prompts so a reply that lands while the plugin is down is delivered on restart. */
+  readonly pending?: { add(entry: { requestId: string; sessionId: string; chat: string; at: number }): Promise<void> };
 }
 
 export interface Bridge {
@@ -333,6 +335,8 @@ export function createBridge(deps: BridgeDeps): Bridge {
     };
     // Register first: the turn may end before prompt() resolves.
     rounds.awaitTurn(round, request.requestId);
+    // Only chat-mode turns deliver the model's own words; those are what a restart must not lose.
+    if (chatMode) void deps.pending?.add({ requestId, sessionId, chat: message.chat, at: Date.now() }).catch(() => {});
     const startedAt = Date.now();
     const meta = { roundId: round.id, sessionId, requestId: request.requestId, chatId: message.chat, userId: message.user };
     try {
