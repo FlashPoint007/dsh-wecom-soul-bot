@@ -123,11 +123,40 @@ export function SoulSection({ disabled }: { disabled: boolean }) {
           </Field>
           <Field
             label="长期记忆"
-            hint={`共享记忆 ${state.memory.sharedEntries} 条。会话记忆只在对应的私聊或群里可见；共享记忆只能在主人私聊时写入。`}
+            hint={`核心 ${state.memory.coreEntries} 条（不会忘）· 近期 ${state.memory.episodicEntries} 条（其中 ${state.memory.fadedEntries} 条已淡忘，可被回忆找回）· 共享 ${state.memory.sharedEntries} 条。近期记忆按遗忘曲线变淡，半衰期 ${settings.halfLifeDays} 天，重要度和每次回忆都会让它忘得更慢。`}
           >
             <span className="wcb-switch-row">
               <Switch checked={settings.memoryEnabled} disabled={busy} label="长期记忆" onChange={next => void save({ memoryEnabled: next })} />
               <span>{settings.memoryEnabled ? '已开启' : '已关闭'}</span>
+            </span>
+          </Field>
+          <Field
+            label="到点提醒"
+            hint={`对机器人说「明早 9 点提醒我开会」，它会真的定上，到点用人设口吻发回原会话。当前待发 ${state.memory.pendingReminders} 条。`}
+          >
+            <span className="wcb-switch-row">
+              <Switch checked={settings.remindersEnabled} disabled={busy} label="到点提醒" onChange={next => void save({ remindersEnabled: next })} />
+              <span>{settings.remindersEnabled ? '已开启' : '已关闭'}</span>
+            </span>
+          </Field>
+          <Field
+            label="主动搭话"
+            hint={`默认关闭。开启后每 ${settings.proactiveIntervalMinutes} 分钟掷一次骰子（不花 token），${Math.round(settings.proactiveChance * 100)}% 概率主动给主人私聊发一句；${settings.quietStartHour}:00–${settings.quietEndHour}:00 不打扰，每天最多 ${settings.proactiveDailyLimit} 次，两次间隔至少 ${settings.proactiveCooldownMinutes} 分钟。没话说时它会选择沉默。今天已发 ${state.memory.proactiveToday} 次。`}
+          >
+            <span className="wcb-switch-row">
+              <Switch checked={settings.proactiveEnabled} disabled={busy} label="主动搭话" onChange={next => void save({ proactiveEnabled: next })} />
+              <span>{settings.proactiveEnabled ? '已开启（仅主人私聊）' : '已关闭'}</span>
+            </span>
+          </Field>
+          <Field label="主动搭话参数" hint="间隔（分钟）、命中概率（0–100%）、安静时段起止（时）、每日上限、冷却（分钟）。改完立即生效。">
+            <span className="wcb-switch-row">
+              <NumberBox label="间隔" value={settings.proactiveIntervalMinutes} min={5} max={1440} disabled={busy} onSave={v => save({ proactiveIntervalMinutes: v })} />
+              <NumberBox label="概率%" value={Math.round(settings.proactiveChance * 100)} min={0} max={100} disabled={busy} onSave={v => save({ proactiveChance: v / 100 })} />
+              <NumberBox label="安静起" value={settings.quietStartHour} min={0} max={23} disabled={busy} onSave={v => save({ quietStartHour: v })} />
+              <NumberBox label="安静止" value={settings.quietEndHour} min={0} max={23} disabled={busy} onSave={v => save({ quietEndHour: v })} />
+              <NumberBox label="每日上限" value={settings.proactiveDailyLimit} min={0} max={50} disabled={busy} onSave={v => save({ proactiveDailyLimit: v })} />
+              <NumberBox label="冷却" value={settings.proactiveCooldownMinutes} min={0} max={1440} disabled={busy} onSave={v => save({ proactiveCooldownMinutes: v })} />
+              <NumberBox label="记忆半衰期(天)" value={settings.halfLifeDays} min={1} max={365} disabled={busy} onSave={v => save({ halfLifeDays: v })} />
             </span>
           </Field>
           <Field
@@ -170,5 +199,33 @@ export function SoulSection({ disabled }: { disabled: boolean }) {
         </div>
       </div>
     </Section>
+  );
+}
+
+/** One integer setting saved on blur or Enter; out-of-range input is clamped by the Host's validation and rejected with a message. */
+function NumberBox({ label, value, min, max, disabled, onSave }: {
+  label: string; value: number; min: number; max: number; disabled: boolean; onSave(next: number): void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => { setDraft(String(value)); }, [value]);
+  const commit = () => {
+    const n = Math.round(Number(draft));
+    if (!Number.isFinite(n) || n < min || n > max) { setDraft(String(value)); return; }
+    if (n !== value) onSave(n);
+  };
+  return (
+    <span className="wcb-switch-row">
+      <span>{label}</span>
+      <Input
+        className="wcb-number"
+        type="number" min={min} max={max} step={1}
+        value={draft}
+        disabled={disabled}
+        aria-label={label}
+        onChange={event => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={event => { if (event.key === 'Enter') commit(); }}
+      />
+    </span>
   );
 }

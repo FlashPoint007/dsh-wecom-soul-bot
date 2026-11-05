@@ -37,12 +37,37 @@ export interface SoulSettings {
   readonly persona: string;
   /** WeCom userids the persona treats as its owner; empty falls back to the administrators. */
   readonly ownerUserIds: readonly string[];
+  /** Base half-life (days) of episodic memory before importance and recall stretch it. */
+  readonly halfLifeDays: number;
+  /** The wecom_reminder_* tools and their delivery. */
+  readonly remindersEnabled: boolean;
+  /** Random proactive chat with the owners' private chats; off by default. */
+  readonly proactiveEnabled: boolean;
+  /** Minutes between two local dice rolls. */
+  readonly proactiveIntervalMinutes: number;
+  /** Chance (0..1) that one roll opens a turn. */
+  readonly proactiveChance: number;
+  /** Local hours [start, end) when the persona never starts a chat; start === end disables. */
+  readonly quietStartHour: number;
+  readonly quietEndHour: number;
+  /** Proactive chats per local day. */
+  readonly proactiveDailyLimit: number;
+  /** Minutes after one proactive chat before the next. */
+  readonly proactiveCooldownMinutes: number;
 }
 
 export type SoulSettingsPatch = Partial<SoulSettings>;
 
 export interface SoulMemoryStats {
+  /** Entries in the shared scope (core + episodic). */
   readonly sharedEntries: number;
+  readonly coreEntries: number;
+  readonly episodicEntries: number;
+  /** Episodic entries whose retention fell below the injection floor. */
+  readonly fadedEntries: number;
+  readonly pendingReminders: number;
+  /** Proactive chats sent today. */
+  readonly proactiveToday: number;
   readonly directory: string;
 }
 

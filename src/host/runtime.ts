@@ -28,6 +28,8 @@ import { createStatusTracker, type StatusTracker } from './status.js';
 import { summarizeTurn, type TurnSummary } from './turns.js';
 import { createWorkspaceService, pluginWorkspacePath } from './workspaces.js';
 import { createSoulService, type SoulService } from './soul/service.js';
+import { createSoulScheduler } from './soul/scheduler.js';
+import { SCHEDULER_USER } from './soul/rules.js';
 import { createSoulStore, validateSoulPatch, type SoulStore } from './soul/store.js';
 import { join } from 'node:path';
 import {
@@ -84,6 +86,8 @@ export interface Runtime {
   current(): Bridge | undefined;
   readonly soul: SoulService;
   readonly soulStore: SoulStore;
+  /** Run one scheduler tick now (tests and manual triggers). */
+  tickScheduler(): Promise<void>;
   /** Apply one persona/memory settings edit from the page. */
   applySoul(patch: unknown): Promise<{ ok: true } | { ok: false; error: string }>;
 }
@@ -155,6 +159,31 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     ...(options.defineTool ? { defineTool: options.defineTool } : {}),
   });
   let stopSoul: (() => void) | undefined;
+  /** Aborts plugin-initiated prompts still in flight when the plugin stops. */
+  const schedulerLifetime = new AbortController();
+  const scheduler = createSoulScheduler({
+    store: soulStore, soul, journal,
+    bindingFor: key => store.get(key),
+    online: () => status.connection().phase === 'online',
+    async submit(binding, text, requestId) {
+      const chatType = binding.kind === 'group' ? 'group' as const : 'single' as const;
+      // Routing keys a private chat by its user, a group by its chat id.
+      const parts = { chat: binding.id, user: binding.id, chatType };
+      const routed = await router.route(parts, binding.groupId);
+      if (!routed.ok || !routed.sessionId) {
+        journal.write({ event: 'soul.scheduled.route-failed', level: 'warn', binding: binding.kind + ':' + binding.id });
+        return undefined;
+      }
+      // The scheduler is never an owner: the turn stays chat-only.
+      soul.noteSender(routed.sessionId, { user: SCHEDULER_USER, chat: binding.id, chatType }, requestId, '');
+      await ctx.sessionController.prompt({
+        requestId, sessionId: routed.sessionId, mode: 'queue',
+        content: [{ type: 'text', text }],
+      }, schedulerLifetime.signal);
+      return routed.sessionId;
+    },
+  });
+  let stopScheduler: (() => void) | undefined;
 
   let bridge: Bridge | undefined;
   let stopBridge: (() => void) | undefined;
@@ -363,6 +392,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
   return {
     observations, rounds, status, catalogs, store, soul, soulStore,
+    tickScheduler: () => scheduler.tick(),
     current: () => bridge,
     async applySoul(patch) {
       await soulStore.load();
@@ -392,6 +422,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       await store.load();
       await soulStore.load();
       stopSoul = soul.start();
+      stopScheduler = scheduler.start();
       schedule();
       await queue;
       await interactionTransport?.start();
@@ -399,6 +430,11 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     async stop() {
       disposed = true;
       for (const dispose of disposers.splice(0)) dispose();
+      stopScheduler?.();
+      stopScheduler = undefined;
+      schedulerLifetime.abort();
+      stopSoul?.();
+      stopSoul = undefined;
       await queue;
       await interactionTransport?.stop();
       teardown();

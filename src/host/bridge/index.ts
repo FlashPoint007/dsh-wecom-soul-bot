@@ -29,7 +29,7 @@ import {
 import { ackSummary, createOutbox, type NoticeKind } from './outbox.js';
 import { createAccessPolicy } from './policy.js';
 import { createSelectionStore } from './selection.js';
-import type { SoulService } from '../soul/service.js';
+import { isSkipReply, type SoulService } from '../soul/service.js';
 
 /**
  * One live WeCom connection bound to one settings snapshot.
@@ -304,7 +304,7 @@ export function createBridge(deps: BridgeDeps): Bridge {
     const sender = { user: message.user, chat: message.chat, chatType: message.chatType };
     const requestId = randomUUID();
     // Before submitting: the tool guard reads who is in this turn.
-    deps.soul?.noteSender(sessionId, sender, requestId);
+    deps.soul?.noteSender(sessionId, sender, requestId, content);
     const text = deps.soul ? deps.soul.decorate(sender, content) : content;
     const request = {
       requestId, sessionId, mode: 'queue' as const,
@@ -492,6 +492,7 @@ export function createBridge(deps: BridgeDeps): Bridge {
       const turn = summary();
       let text: string;
       if (reason === 'error') text = '我好像卡住了，等会儿再找我试试';
+      else if (turn.assistantText && isSkipReply(turn.assistantText)) return []; // the persona chose silence
       else if (turn.assistantText) text = markdownBody(turn.assistantText, MAX_REPLY_BYTES - 100);
       else return []; // nothing to say: stay quiet rather than send an empty card
       notify(chats, text, kind, session.id);
