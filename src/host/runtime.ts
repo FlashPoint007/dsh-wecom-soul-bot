@@ -35,6 +35,7 @@ import { createHostSessionControls } from './session-controls.js';
 import { createPendingLedger, outcomeOf } from './pending.js';
 import { BIND_EVENT, bindingChanges, createDeliveryService, UNBIND_EVENT, type WecomDeliveryService } from './delivery-service.js';
 import { createSoulStore, validateSoulPatch, type SoulStore } from './soul/store.js';
+import { createStickerStore } from './soul/stickers.js';
 import { join } from 'node:path';
 import {
   STORE_VERSION, type BridgeStateView, type ModelCatalogView, type PresetCatalogView, type StoreOp, type RoutingView,
@@ -158,7 +159,13 @@ export function createRuntime(options: RuntimeOptions): Runtime {
 
   const router: Router = createRouter({ store, provisioner, log });
   const soulStore = createSoulStore({ directory: options.soulDirectory ?? join(pluginHome(), 'soul') });
+  const stickers = createStickerStore({ directory: join(options.soulDirectory ?? join(pluginHome(), 'soul'), 'stickers') });
   const soul = createSoulService({
+    stickers: {
+      store: stickers,
+      recentImages: chat => bridge?.recentImages(chat) ?? [],
+      sendImage: (chat, image, filename) => (bridge ? bridge.sendImage(chat, image, filename) : Promise.resolve(false)),
+    },
     ctx, store: soulStore, journal,
     bindings: { forSession: sessionId => store.forSession(sessionId) },
     admins: () => store.settings().adminUserIds,
@@ -499,6 +506,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       for (const dispose of off) if (typeof dispose === 'function') disposers.push(dispose);
       await store.load();
       await soulStore.load();
+      await stickers.load();
       stopSoul = soul.start();
       stopScheduler = scheduler.start();
       lastBindings = store.bindings();

@@ -48,7 +48,15 @@ export const MEMORY_RULES = [
 export const CHAT_TOOLS = new Set([
   'wecom_memory_remember', 'wecom_memory_recall', 'wecom_memory_forget',
   'wecom_reminder_set', 'wecom_reminder_list', 'wecom_reminder_cancel',
+  'wecom_sticker_save', 'wecom_sticker_send', 'wecom_sticker_list', 'wecom_sticker_delete',
 ]);
+
+export const STICKER_RULES = [
+  '## 表情包（插件管理）',
+  '- 对方发来的图片你能看到，可以正常识图、回应图里的内容。',
+  '- 企业微信自带的表情不会转发给机器人；主人想加表情包，就把图片当普通图片发过来，再让你用 wecom_sticker_save 起个名字存起来（只有主人能存）。',
+  '- 想配图时用 wecom_sticker_send 按名字或标签发一张，大约三四次回复配一张，别每句都发；库里没有合适的就别硬发。',
+].join('\n');
 
 export const MAX_REMINDER_AHEAD_MS = 366 * 86_400_000;
 

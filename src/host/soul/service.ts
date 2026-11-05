@@ -3,10 +3,11 @@ import type { HostContext, PromptAssembly, ToolExecution } from '../dsh.js';
 import type { Journal } from '../journal.js';
 import { clampImportance, rankEpisodic, type MemoryEntry } from './memory.js';
 import {
-  CHAT_ONLY_RULE, CHAT_TOOLS, IDENTITY_TAG, MEMORY_RULES, RULES, SCHEDULER_USER, SKIP_REPLY, WORK_RULE,
+  CHAT_ONLY_RULE, CHAT_TOOLS, IDENTITY_TAG, MEMORY_RULES, RULES, SCHEDULER_USER, SKIP_REPLY, STICKER_RULES, WORK_RULE,
 } from './rules.js';
 import type { SoulStore } from './store.js';
 import { bindingKeyOf, buildSoulTools } from './tools.js';
+import { buildStickerTools, type ImageBytes, type StickerStore } from './stickers.js';
 
 export { IDENTITY_TAG, SCHEDULER_USER, SKIP_REPLY } from './rules.js';
 
@@ -51,6 +52,12 @@ export interface SoulServiceOptions {
   /** defineTool from @deepseek-ai/dsh-tools; omitted, the memory and reminder tools are not registered. */
   readonly defineTool?: (options: unknown) => unknown;
   readonly now?: () => number;
+  /** Sticker library and the image channel it needs; omitted, the sticker tools are not registered. */
+  readonly stickers?: {
+    readonly store: StickerStore;
+    recentImages(chat: string): readonly ImageBytes[];
+    sendImage(chat: string, image: ImageBytes, filename: string): Promise<boolean>;
+  };
 }
 
 export interface SoulService {
@@ -192,6 +199,10 @@ export function createSoulService(options: SoulServiceOptions): SoulService {
     const sessionId = sessionIdOf(assembly)!;
     const parts = [RULES, workAllowed(sessionId) ? WORK_RULE : CHAT_ONLY_RULE];
     if (settings.memoryEnabled) parts.push(renderMemory(sessionId, bindingFor(sessionId)!));
+    if (options.stickers) {
+      const names = options.stickers.store.list().slice(0, 40).map(s => s.name);
+      parts.push(STICKER_RULES + '\n- 表情包库：' + (names.length ? names.join('、') : '（还是空的）'));
+    }
     return parts.join('\n\n');
   }
 
@@ -200,6 +211,13 @@ export function createSoulService(options: SoulServiceOptions): SoulService {
     const registry = ctx.tools;
     if (!define || !registry) return [];
     const defs = buildSoulTools(define, { store, journal, now, bindingFor, senderOf, isOwner });
+    if (options.stickers) {
+      defs.push(...buildStickerTools(define, {
+        stickers: options.stickers.store, journal, bindingFor, senderOf, isOwner,
+        recentImages: chat => options.stickers!.recentImages(chat),
+        sendImage: (chat, image, filename) => options.stickers!.sendImage(chat, image, filename),
+      }));
+    }
     const disposers: (() => void)[] = [];
     for (const tool of defs) {
       const off = registry.register(tool);

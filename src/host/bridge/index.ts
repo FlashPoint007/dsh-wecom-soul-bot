@@ -31,6 +31,7 @@ import { createAccessPolicy } from './policy.js';
 import { createSelectionStore } from './selection.js';
 import { isSkipReply, type SoulService } from '../soul/service.js';
 import { imagePartsOf, loadImages, type PromptBlock } from './images.js';
+import { RECENT_IMAGE_TTL_MS } from '../soul/stickers.js';
 import type { HostSessionControls } from '../session-controls.js';
 
 /**
@@ -48,7 +49,7 @@ import type { HostSessionControls } from '../session-controls.js';
  */
 
 export type BridgeClient = Pick<WSClient, 'on' | 'connect' | 'disconnect' | 'removeAllListeners' | 'sendMessage' | 'replyStream'>
-  & Partial<Pick<WSClient, 'downloadFile'>>;
+  & Partial<Pick<WSClient, 'downloadFile' | 'uploadMedia' | 'sendMediaMessage'>>;
 
 export interface BridgeDeps {
   readonly ctx: Pick<HostContext, 'on' | 'sessionController'>;
@@ -103,6 +104,10 @@ export interface Bridge {
   updateSettings(settings: BridgeSettings): void;
   /** Drop administrator switches when a chat is assigned, moved or removed. */
   resetRouting(chat: string): void;
+  /** Images this chat sent in the last half hour, newest last (for the sticker library). */
+  recentImages(chat: string): readonly { buffer: Buffer; mediaType: string }[];
+  /** Upload one image and send it to a chat as a WeCom image message. */
+  sendImage(chat: string, image: { buffer: Buffer; mediaType: string }, filename: string): Promise<boolean>;
 }
 
 export function createBridge(deps: BridgeDeps): Bridge {
@@ -457,6 +462,15 @@ export function createBridge(deps: BridgeDeps): Bridge {
     return await serialize(message.chat, () => handleMessage(message));
   }
 
+  /** Last images per chat for wecom_sticker_save; dropped after RECENT_IMAGE_TTL_MS. */
+  const recent = new Map<string, { at: number; buffer: Buffer; mediaType: string }[]>();
+  function rememberImages(chat: string, blocks: readonly PromptBlock[]): void {
+    const now = Date.now();
+    const kept = (recent.get(chat) ?? []).filter(i => now - i.at < RECENT_IMAGE_TTL_MS);
+    for (const b of blocks) if (b.type === 'image') kept.push({ at: now, buffer: Buffer.from(b.data, 'base64'), mediaType: b.mediaType });
+    recent.set(chat, kept.slice(-8));
+  }
+
   async function handleMessage(message: InboundMessage): Promise<void> {
     // A queued message may wait out a bridge rebuild; drop it instead of
     // spending a round on a conversation that no longer has a live socket.
@@ -504,6 +518,7 @@ export function createBridge(deps: BridgeDeps): Bridge {
       }
       const { blocks, failed } = await loadImages(parts.images, download);
       if (stale(ticket)) return;
+      rememberImages(message.chat, blocks);
       journal.write({ event: 'wecom.images', roundId: round.id, images: parts.images.length, loaded: blocks.length, failed });
       if (!blocks.length) {
         await reply(message, round, `${title('⚠️', '图片下载失败')}\n\n稍后再发一次试试。`);
@@ -726,6 +741,23 @@ export function createBridge(deps: BridgeDeps): Bridge {
       }
       settings = next;
       policy = policyFor();
+    },
+    recentImages(chat) {
+      const now = Date.now();
+      return (recent.get(chat) ?? []).filter(i => now - i.at < RECENT_IMAGE_TTL_MS).map(i => ({ buffer: i.buffer, mediaType: i.mediaType }));
+    },
+    async sendImage(chat, image, filename) {
+      if (closed || !client.uploadMedia || !client.sendMediaMessage) return false;
+      try {
+        const uploaded = await client.uploadMedia(image.buffer, { type: 'image', filename });
+        const ack = await client.sendMediaMessage(chat, 'image', uploaded.media_id) as { errcode?: number } | undefined;
+        const ok = !(typeof ack?.errcode === 'number' && ack.errcode !== 0);
+        journal.write({ event: 'wecom.send.image', level: ok ? 'info' : 'warn', chatId: chat, bytes: image.buffer.length, response: ackSummary(ack) });
+        return ok;
+      } catch (error) {
+        journal.write({ event: 'wecom.send.image', level: 'warn', chatId: chat, error });
+        return false;
+      }
     },
     resetRouting(chat) {
       routingGenerations.set(chat, (routingGenerations.get(chat) ?? 0) + 1);
