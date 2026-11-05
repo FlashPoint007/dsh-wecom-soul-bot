@@ -30,6 +30,7 @@ import { createWorkspaceService, pluginWorkspacePath } from './workspaces.js';
 import { createSoulService, type SoulService } from './soul/service.js';
 import { createSoulScheduler } from './soul/scheduler.js';
 import { SCHEDULER_USER } from './soul/rules.js';
+import { createHostSessionControls } from './session-controls.js';
 import { createSoulStore, validateSoulPatch, type SoulStore } from './soul/store.js';
 import { join } from 'node:path';
 import {
@@ -184,6 +185,18 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     },
   });
   let stopScheduler: (() => void) | undefined;
+  const controls = createHostSessionControls({
+    ctx, models,
+    async running(sessionId) {
+      try { return (await catalogs.load({ force: true })).get(sessionId)?.running === true; } catch { return false; }
+    },
+    async currentModel(sessionId) {
+      try {
+        const entry = (await catalogs.load()).get(sessionId);
+        return entry?.model ? entry.model.provider + '/' + entry.model.model : undefined;
+      } catch { return undefined; }
+    },
+  });
 
   let bridge: Bridge | undefined;
   let stopBridge: (() => void) | undefined;
@@ -304,7 +317,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
     });
     const created = createBridge({
       ctx, client, settings, router, log, journal, observations, rounds, catalogs, status, scrub,
-      ops: sessionOps, workspaces, soul,
+      ops: sessionOps, workspaces, soul, controls,
       brokeredInteractions: Boolean(interactionTransport), notificationOnly: !interactionTransport,
     });
     stopBridge = created.start();

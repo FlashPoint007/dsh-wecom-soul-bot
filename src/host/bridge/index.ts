@@ -30,6 +30,7 @@ import { ackSummary, createOutbox, type NoticeKind } from './outbox.js';
 import { createAccessPolicy } from './policy.js';
 import { createSelectionStore } from './selection.js';
 import { isSkipReply, type SoulService } from '../soul/service.js';
+import type { HostSessionControls } from '../session-controls.js';
 
 /**
  * One live WeCom connection bound to one settings snapshot.
@@ -69,6 +70,8 @@ export interface BridgeDeps {
   readonly notificationOnly?: boolean;
   /** Persona, sender identity and chat mode; omitted, the bridge behaves like upstream dsh-wecom-bot. */
   readonly soul?: SoulService;
+  /** steer / clear / model / history; omitted, those commands answer "unsupported". */
+  readonly controls?: HostSessionControls;
 }
 
 export interface Bridge {
@@ -258,6 +261,24 @@ export function createBridge(deps: BridgeDeps): Bridge {
     },
     stale: ticket => stale(ticket.bridge) || (routingGenerations.get(ticket.chat) ?? 0) !== ticket.routing,
     ticket: message => ({ bridge: generation, chat: message.chat, routing: routingGenerations.get(message.chat) ?? 0 }),
+    ...(deps.controls ? { controls: {
+      async steer(sessionId, text, message) {
+        const requestId = randomUUID();
+        const sender = { user: message.user, chat: message.chat, chatType: message.chatType };
+        // A steer joins the running turn: its sender counts for the tool guard too.
+        deps.soul?.noteSender(sessionId, sender, requestId, text);
+        const body = deps.soul ? deps.soul.decorate(sender, text) : text;
+        return deps.controls!.steer(sessionId, body, requestId);
+      },
+      clear: sessionId => deps.controls!.clear(sessionId),
+      models: sessionId => deps.controls!.models(sessionId),
+      selectModel: (sessionId, provider, model) => deps.controls!.selectModel(sessionId, provider, model),
+      history: (sessionId, count) => deps.controls!.history(sessionId, count),
+      // Owners (or, without a persona, administrators) may steer, clear and switch models;
+      // in a group the shared Session also needs an administrator, like /compact.
+      mayControl: message => (deps.soul ? deps.soul.isOwner(message.user) : policy.isAdmin(message.user))
+        && (message.chatType === 'single' || policy.isAdmin(message.user) || Boolean(deps.soul?.isOwner(message.user))),
+    } } : {}),
   };
 
   async function submitPrompt(message: InboundMessage, round: Round, content: string): Promise<void> {

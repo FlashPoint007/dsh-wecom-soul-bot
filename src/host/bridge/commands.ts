@@ -85,6 +85,23 @@ export interface CommandServices {
   /** True once the bridge stopped or was replaced after `ticket` was taken. */
   stale(ticket: OperationTicket): boolean;
   ticket(message: InboundMessage): OperationTicket;
+  /** Session controls borrowed from dsh-im; absent in tests that do not need them. */
+  readonly controls?: SessionControls;
+}
+
+/** Extra Session controls: steer, clear, model, history. */
+export interface SessionControls {
+  /** Inject text into the running turn; false when nothing is running. */
+  steer(sessionId: string, text: string, sender: InboundMessage): Promise<boolean>;
+  /** Run DSH's own /clear on the Session; undefined when the Host has no command gateway. */
+  clear(sessionId: string): Promise<'cleared' | 'unsupported' | { readonly error: string }>;
+  /** The models the Session may switch to, and the current one. */
+  models(sessionId: string): Promise<{ readonly current?: string; readonly choices: readonly { readonly label: string; readonly provider: string; readonly model: string }[] }>;
+  selectModel(sessionId: string, provider: string, model: string): Promise<string>;
+  /** Last user/assistant exchanges, oldest first. */
+  history(sessionId: string, count: number): Promise<readonly { readonly role: 'user' | 'assistant'; readonly text: string }[] | undefined>;
+  /** Whether this sender may steer, clear or switch models here. */
+  mayControl(message: InboundMessage): boolean;
 }
 
 export interface CommandScope {
@@ -492,6 +509,75 @@ export async function runCommand(services: CommandServices, scope: CommandScope,
       await reply(result === 'closed' ? interactionIgnoredText()
         : result === 'submitted' ? interactionSubmittedText('approval')
           : title(outcome === 'allowed-once' ? '✅' : '🚫', outcome === 'allowed-once' ? '已允许本次工具调用' : '已拒绝本次工具调用'));
+      return;
+    }
+
+    case 'stop': {
+      // dsh-im spelling of /cancel.
+      await runCommand(services, scope, { ...command, name: 'cancel' });
+      return;
+    }
+
+    case 'steer':
+    case 'clear':
+    case 'model':
+    case 'history': {
+      const controls = services.controls;
+      const target = await services.current(message);
+      if (!current()) return;
+      if (!controls) { await reply(notice('⚠️', '当前 DSH 不支持这个命令')); return; }
+      if (!target.sessionId) { await reply(notice('ℹ️', '你还没有专属会话', '发送任意消息即可创建。')); return; }
+      const sessionId = target.sessionId;
+      const needsControl = command.name !== 'history';
+      if (needsControl && !controls.mayControl(message)) {
+        await reply(notice('🔒', '这个命令只有主人或管理员能用', message.chatType === 'group' ? '群里的会话是大家共用的。' : undefined));
+        return;
+      }
+      try {
+        if (command.name === 'steer') {
+          if (!command.rest) { await reply(notice('ℹ️', '用法', code('/steer 补充指令') + ' —— 把补充说明插进正在运行的回合。')); return; }
+          const ok = await controls.steer(sessionId, command.rest, message);
+          if (!current()) return;
+          await reply(ok ? title('💬', '已插入当前回合，下一步就会读到')
+            : notice('ℹ️', '当前没有正在运行的回合', '直接发消息即可开始新一轮。'));
+          return;
+        }
+        if (command.name === 'clear') {
+          const result = await controls.clear(sessionId);
+          if (!current()) return;
+          if (result === 'cleared') await reply(notice('🧹', '已清空当前会话的上下文', '会话绑定和长期记忆都保留。'));
+          else if (result === 'unsupported') await reply(notice('⚠️', '当前 DSH 不支持 /clear', '会话没有改动；可以用 /compact 压缩，或 /delete 换新会话。'));
+          else await reply(notice('⚠️', '清空上下文失败', inline(result.error, 300)));
+          return;
+        }
+        if (command.name === 'model') {
+          const { current: now, choices } = await controls.models(sessionId);
+          if (!current()) return;
+          const pick = command.args[0];
+          if (!pick) {
+            const rows = choices.slice(0, 30).map((c, i) => (i + 1) + '. ' + inline(c.label, 80) + (now === c.provider + '/' + c.model ? '（当前）' : ''));
+            await reply([title('🧠', '可切换的模型'), '', ...rows, '', '发送 ' + code('/model 序号') + ' 切换当前会话的模型。'].join('\n'));
+            return;
+          }
+          const index = Number(pick);
+          const choice = Number.isInteger(index) && index >= 1 ? choices[index - 1]
+            : choices.find(c => c.provider + '/' + c.model === pick || c.model === pick);
+          if (!choice) { await reply(notice('⚠️', '没有这个模型', '发送 ' + code('/model') + ' 查看序号。')); return; }
+          const selected = await controls.selectModel(sessionId, choice.provider, choice.model);
+          if (!current()) return;
+          await reply(notice('✅', '已切换模型', '当前会话下一轮起使用 ' + code(inline(selected, 120))));
+          return;
+        }
+        const count = Math.min(5, Math.max(1, Number(command.args[0]) || 3));
+        const items = await controls.history(sessionId, count);
+        if (!current()) return;
+        if (!items) { await reply(notice('⚠️', '暂时读不到这个会话的历史')); return; }
+        if (!items.length) { await reply(notice('ℹ️', '这个会话还没有可预览的消息')); return; }
+        const rows = items.map(item => (item.role === 'user' ? '🙋 ' : '🐳 ') + inline(item.text, 400));
+        await reply([title('🗒', '最近 ' + items.length + ' 条'), '', ...rows, '', '> 以上是历史记录，不是新回复。'].join('\n\n'));
+      } catch (error) {
+        if (current()) await reply(notice('⚠️', '命令执行失败', inline(error instanceof Error ? error.message : String(error), 300)));
+      }
       return;
     }
 

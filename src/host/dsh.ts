@@ -81,7 +81,8 @@ export interface ApprovalRequest {
 export interface PromptRequest {
   readonly requestId: string;
   readonly sessionId: string;
-  readonly mode: 'queue';
+  /** queue: a new turn after the current one; steer: injected into the running turn. */
+  readonly mode: 'queue' | 'steer';
   readonly content: readonly { readonly type: 'text'; readonly text: string }[];
 }
 
