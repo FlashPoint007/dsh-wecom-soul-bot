@@ -28,6 +28,21 @@ export interface Notice {
   /** An actionable notice may not outlive this exact pending interaction. */
   readonly interactionNonce?: string;
   readonly roundIds?: readonly string[];
+  /** Send attempts already made; set by the outbox when it retries a definite failure. */
+  readonly attempts?: number;
+}
+
+/** A send that failed for certain is retried this many times in total; an uncertain one never is. */
+export const MAX_SEND_ATTEMPTS = 3;
+
+/**
+ * Whether a failed send certainly did not deliver. A timeout or a dropped
+ * connection after the frame left may or may not have delivered: retrying it
+ * risks a duplicate message, so it is reported and left alone.
+ */
+export function definiteFailure(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return !/time ?out|timed out|ETIMEDOUT|ECONNRESET|socket hang up|unknown/i.test(text);
 }
 
 export interface Outbox {
@@ -55,6 +70,8 @@ export function createOutbox(options: {
   readonly log: Logger;
   readonly status: StatusTracker;
   readonly maxQueue?: number;
+  /** Base backoff before a retry (tests use 0). */
+  readonly retryDelayMs?: number;
   /** Re-check live authorization immediately before each queued send. */
   readonly allow?: (notice: Notice) => Promise<boolean>;
 }): Outbox {
@@ -64,6 +81,21 @@ export function createOutbox(options: {
   let online = false;
   let sending = false;
   let closed = false;
+
+  /** Queue a definite failure again after a short backoff, up to MAX_SEND_ATTEMPTS in total. */
+  function retry(notice: Notice, reason: string): void {
+    const attempts = (notice.attempts ?? 0) + 1;
+    if (attempts >= MAX_SEND_ATTEMPTS) {
+      journal.write({ event: 'wecom.send.gave-up', level: 'warn', chatId: notice.chat, kind: notice.kind, attempts, reason });
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (closed) return;
+      queue.push({ ...notice, attempts });
+      void drain();
+    }, (options.retryDelayMs ?? 2000) * attempts);
+    timer.unref?.();
+  }
 
   async function drain(): Promise<void> {
     if (sending || !online || closed) return;
@@ -87,6 +119,14 @@ export function createOutbox(options: {
           // Authentication may have dropped while the permission lookup ran.
           if (!online) { queue.unshift(notice); return; }
           const ack = await client.sendMessage(notice.chat, body);
+          const errcode = (ack as { errcode?: unknown } | undefined)?.errcode;
+          if (typeof errcode === 'number' && errcode !== 0) {
+            // WeCom answered and refused: nothing was delivered, so a retry cannot duplicate.
+            status.count('failures');
+            journal.write({ event: 'wecom.send', level: 'warn', ...meta, request: { chatid: notice.chat, body }, response: ackSummary(ack), durationMs: Date.now() - started });
+            retry(notice, 'refused');
+            continue;
+          }
           status.count('notifications');
           journal.write({ event: 'wecom.send', ...meta, request: { chatid: notice.chat, body }, response: ackSummary(ack), durationMs: Date.now() - started });
         } catch (error) {
@@ -94,6 +134,8 @@ export function createOutbox(options: {
           // SDK errors may echo the socket URL: keep them out of the DSH log.
           log.warn('WeCom notification send failed');
           journal.write({ event: 'wecom.send', level: 'warn', ...meta, request: { chatid: notice.chat, body }, error, durationMs: Date.now() - started });
+          if (definiteFailure(error)) retry(notice, 'error');
+          else journal.write({ event: 'wecom.send.uncertain', level: 'warn', ...meta, attempts: (notice.attempts ?? 0) + 1 });
         }
       }
     } finally {
