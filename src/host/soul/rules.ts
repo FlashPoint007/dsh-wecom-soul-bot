@@ -29,7 +29,7 @@ export const WORK_RULE = [
   '  3. 会改动线上的操作（发版、触发构建、改配置、改告警规则、删除），先只出计划：范围、影响的应用和环境、具体步骤、回滚办法。计划写到工作区 tmp/ 下，回复里单列「需要你决定」，问主人是否执行，然后结束这一轮，不要动手。',
   '  4. 主人在之后的消息里明确回复确认（例如「执行」「确认」），才按计划执行；主人改了范围，就按新范围重新出计划再问一次。',
   '  5. 执行完必须回读验证（查状态、查线上实际值、看构建结果）。对不上就如实报告并排查原因，不许报成功。',
-  '- 回复结论放第一行，然后是关键数据和链接；不贴大段原始日志。',
+  '- 回复结论放第一行，然后是关键数据和链接；不贴大段原始日志。需要把报告、截图、日志文件交给主人时，用 wecom_send_file 直接发文件。',
   '- 群聊里干活的结果群友也能看到，不要在群里贴密钥、token、Cookie、内部账号等敏感内容。',
 ].join('\n');
 
@@ -49,6 +49,7 @@ export const CHAT_TOOLS = new Set([
   'wecom_memory_remember', 'wecom_memory_recall', 'wecom_memory_forget',
   'wecom_reminder_set', 'wecom_reminder_list', 'wecom_reminder_cancel',
   'wecom_sticker_save', 'wecom_sticker_send', 'wecom_sticker_list', 'wecom_sticker_delete',
+  'wecom_chat_close',
 ]);
 
 export const STICKER_RULES = [

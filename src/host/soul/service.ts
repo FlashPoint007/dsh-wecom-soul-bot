@@ -8,6 +8,14 @@ import {
 import type { SoulStore } from './store.js';
 import { bindingKeyOf, buildSoulTools } from './tools.js';
 import { buildStickerTools, type ImageBytes, type StickerStore } from './stickers.js';
+import { matchLore, splitPersona } from './worldbook.js';
+import { CLOSING_COOL_MS, looksLikeQuestion, type ClosingStore } from './closing.js';
+import { readFile, stat } from 'node:fs/promises';
+import { basename, isAbsolute } from 'node:path';
+
+/** WeCom media upload accepts up to ~50 MB in 100 chunks; keep files modest. */
+export const MAX_SEND_FILE_BYTES = 20 * 1024 * 1024;
+import { formatLocal } from './rules.js';
 
 export { IDENTITY_TAG, SCHEDULER_USER, SKIP_REPLY } from './rules.js';
 
@@ -52,6 +60,10 @@ export interface SoulServiceOptions {
   /** defineTool from @deepseek-ai/dsh-tools; omitted, the memory and reminder tools are not registered. */
   readonly defineTool?: (options: unknown) => unknown;
   readonly now?: () => number;
+  /** Send a local file to a chat; omitted, wecom_send_file is not registered. */
+  readonly sendFile?: (chat: string, buffer: Buffer, filename: string) => Promise<boolean>;
+  /** Conversation closing records; omitted, wecom_chat_close is not registered. */
+  readonly closing?: ClosingStore;
   /** Sticker library and the image channel it needs; omitted, the sticker tools are not registered. */
   readonly stickers?: {
     readonly store: StickerStore;
@@ -82,6 +94,8 @@ export interface SoulService {
   lastSender(sessionId: string): string | undefined;
   /** Whether a Session belongs to a WeCom conversation. */
   bound(sessionId: string | undefined): boolean;
+  /** Whether a chat was closed recently enough that proactive chat should stay quiet. */
+  closedRecently(bindingKey: string): boolean;
   state(): SoulStateView;
 }
 
@@ -160,7 +174,12 @@ export function createSoulService(options: SoulServiceOptions): SoulService {
 
   function renderPersona(assembly: PromptAssembly | undefined): string {
     if (!active(assembly)) return '';
-    return store.settings().persona.trim();
+    const { body, lore } = splitPersona(store.settings().persona);
+    const sessionId = sessionIdOf(assembly);
+    const hits = sessionId ? matchLore(lore, lastText.get(sessionId) ?? '') : [];
+    if (!hits.length) return body;
+    // Only the entries this message triggered: a long worldbook costs nothing until mentioned.
+    return body + '\n\n## 相关设定（这次提到才想起来的）\n' + hits.map(h => '- ' + h.text).join('\n');
   }
 
   function scopeLabel(scope: 'chat' | 'shared'): string {
@@ -199,6 +218,11 @@ export function createSoulService(options: SoulServiceOptions): SoulService {
     const sessionId = sessionIdOf(assembly)!;
     const parts = [RULES, workAllowed(sessionId) ? WORK_RULE : CHAT_ONLY_RULE];
     if (settings.memoryEnabled) parts.push(renderMemory(sessionId, bindingFor(sessionId)!));
+    const closed = options.closing?.get(bindingKeyOf(bindingFor(sessionId)!), now());
+    if (closed) {
+      parts.push('## 上次收尾（' + formatLocal(closed.at) + '）\n- 聊到：' + closed.point + (closed.resume ? '\n- 下次可以这样接：' + closed.resume : '')
+        + '\n- 接话自然点，别复述这条记录。');
+    }
     if (options.stickers) {
       const names = options.stickers.store.list().slice(0, 40).map(s => s.name);
       parts.push(STICKER_RULES + '\n- 表情包库：' + (names.length ? names.join('、') : '（还是空的）'));
@@ -211,6 +235,67 @@ export function createSoulService(options: SoulServiceOptions): SoulService {
     const registry = ctx.tools;
     if (!define || !registry) return [];
     const defs = buildSoulTools(define, { store, journal, now, bindingFor, senderOf, isOwner });
+    if (options.sendFile) {
+      const sendFile = options.sendFile;
+      defs.push(define({
+        name: 'wecom_send_file',
+        description: '企业微信机器人专用：把本机的一个文件作为企业微信文件消息发到当前私聊或群里（最大 20 MiB）。只在工作模式下、整轮都是主人的消息时可用。发之前确认路径对、内容可以给这个会话的人看；群里别发含密钥或私人信息的文件。',
+        parameters: { path: { type: 'string', required: true, description: '文件的绝对路径。' } },
+        output: {
+          schema: { type: 'object', additionalProperties: false, properties: { sent: { type: 'boolean' }, name: { type: 'string' }, bytes: { type: 'integer' } } },
+          render: (_a: unknown, v: { sent: boolean; name: string; bytes: number }) => [{ type: 'text', text: v.sent ? '已发出文件 ' + v.name + '（' + v.bytes + ' 字节）。' : '文件 ' + v.name + ' 没发出去（连接不可用或企业微信拒收）。' }],
+        },
+        isConcurrencySafe: () => false,
+        async execute(args: { path?: unknown }, exec: { agent?: { id?: string; session?: { id?: string } } } | undefined) {
+          const sessionId = exec?.agent?.session?.id ?? exec?.agent?.id;
+          const binding = bindingFor(sessionId);
+          if (!sessionId || !binding) throw new Error('这个工具只在企业微信机器人的会话里可用。');
+          // Defence in depth: the tool guard already blocks this outside owner-only work turns.
+          if (!workAllowed(sessionId)) throw new Error('发文件只在工作模式下、整轮都是主人的消息时可用。');
+          const file = String(args.path ?? '').trim();
+          if (!isAbsolute(file)) throw new Error('path 必须是绝对路径。');
+          const info = await stat(file).catch(() => undefined);
+          if (!info?.isFile()) throw new Error('找不到这个文件：' + file);
+          if (info.size === 0) throw new Error('文件是空的。');
+          if (info.size > MAX_SEND_FILE_BYTES) throw new Error('文件超过 20 MiB，企业微信发不了。');
+          const buffer = await readFile(file);
+          const name = basename(file);
+          const sent = await sendFile(binding.id, buffer, name);
+          journal.write({ event: 'soul.file.send', sessionId, name, bytes: buffer.length, sent });
+          return { sent, name, bytes: buffer.length };
+        },
+        presentCall: (args: unknown) => ({ card: 'generic', title: '发文件到企业微信', kind: 'other', rawInput: args }),
+      }));
+    }
+    if (options.closing) {
+      const closing = options.closing;
+      defs.push(define({
+        name: 'wecom_chat_close',
+        description: '企业微信机器人专用：判断这段私聊聊完了（对方说了晚安、去忙了、话题自然收住），就记一句「收在哪 | 下次怎么接」。不发任何消息、不改记忆，只是给这段对话画个句号：下次接话时会看到这条，接下来 90 分钟也不会主动搭话。只做私聊；对方还在提问时会被拒绝。',
+        parameters: {
+          point: { type: 'string', required: true, description: '这段聊到哪儿停的，一句话。' },
+          resume: { type: 'string', description: '下次可以怎么接，一句话（可省）。' },
+        },
+        output: {
+          schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, why: { type: 'string' } } },
+          render: (_a: unknown, v: { ok: boolean; why: string }) => [{ type: 'text', text: v.ok ? '已收尾。' : '没有收尾：' + v.why }],
+        },
+        isConcurrencySafe: () => false,
+        async execute(args: { point?: unknown; resume?: unknown }, exec: { agent?: { id?: string; session?: { id?: string } } } | undefined) {
+          const sessionId = exec?.agent?.session?.id ?? exec?.agent?.id;
+          const binding = bindingFor(sessionId);
+          if (!sessionId || !binding) throw new Error('这个工具只在企业微信机器人的会话里可用。');
+          if (binding.kind !== 'user') return { ok: false, why: '群里不收尾' };
+          const point = String(args.point ?? '').trim().slice(0, 120);
+          if (!point) return { ok: false, why: '没写收在哪' };
+          if (looksLikeQuestion(lastText.get(sessionId) ?? '')) return { ok: false, why: '对方还在提问，先答完' };
+          await closing.set(bindingKeyOf(binding), { point, resume: String(args.resume ?? '').trim().slice(0, 120), at: now() });
+          journal.write({ event: 'soul.chat.close', sessionId, binding: bindingKeyOf(binding) });
+          return { ok: true, why: '' };
+        },
+        presentCall: (args: unknown) => ({ card: 'generic', title: '收个尾', kind: 'other', rawInput: args }),
+      }));
+    }
     if (options.stickers) {
       defs.push(...buildStickerTools(define, {
         stickers: options.stickers.store, journal, bindingFor, senderOf, isOwner,
@@ -295,6 +380,10 @@ export function createSoulService(options: SoulServiceOptions): SoulService {
     },
     isOwner,
     owners,
+    closedRecently(bindingKey) {
+      const rec = options.closing?.get(bindingKey, now());
+      return Boolean(rec && now() - rec.at < CLOSING_COOL_MS);
+    },
     lastSender(sessionId) {
       const s = senders.get(sessionId);
       return s && s.user !== SCHEDULER_USER ? s.user : undefined;

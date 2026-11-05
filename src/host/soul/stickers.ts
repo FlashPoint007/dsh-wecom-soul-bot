@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readdirSync, statSync } from 'node:fs';
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { BindingRecord } from '../../shared/protocol.js';
@@ -35,6 +36,15 @@ export interface ImageBytes {
 
 const EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
 
+/** Tags from a dropped-in file name: "开心_猫 (2).png" -> ["开心", "猫"]; numbers are sequence noise. */
+export function tagsFromFilename(file: string): string[] {
+  const stem = file.replace(/\.[^.]+$/, '');
+  return stem.split(/[_\-\s()（）·、,.]+/).map(s => s.trim()).filter(s => s && !/^\d+$/.test(s)).slice(0, 4);
+}
+
+const DROP_EXT: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+export const MAX_DROPPED_STICKERS = 300;
+
 export function cleanName(value: unknown): string {
   return String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 30);
 }
@@ -67,6 +77,34 @@ export function createStickerStore(options: { readonly directory: string; readon
     await rename(temp, indexFile);
     await chmod(indexFile, 0o600).catch(() => {});
   };
+  /**
+   * Images dropped into <dir>/drop/ are stickers too (dsh-roost style): the file name is the
+   * sticker name and its parts are tags. Rescanned at most every 3 seconds.
+   */
+  let dropCache: { at: number; list: Sticker[] } = { at: 0, list: [] };
+  const dropped = (): Sticker[] => {
+    const t = now();
+    if (t - dropCache.at < 3000) return dropCache.list;
+    const list: Sticker[] = [];
+    try {
+      for (const entry of readdirSync(join(dir, 'drop'), { withFileTypes: true })) {
+        if (!entry.isFile() || list.length >= MAX_DROPPED_STICKERS) continue;
+        const ext = entry.name.split('.').pop()?.toLowerCase() ?? '';
+        const mediaType = DROP_EXT[ext];
+        if (!mediaType || entry.name.startsWith('.')) continue;
+        const size = statSync(join(dir, 'drop', entry.name)).size;
+        if (size === 0 || size > MAX_STICKER_BYTES) continue;
+        const tags = tagsFromFilename(entry.name);
+        list.push({
+          id: 'drop:' + entry.name, name: cleanName(entry.name.replace(/\.[^.]+$/, '')), tags, mediaType,
+          file: 'drop/' + entry.name, bytes: size, addedBy: 'folder', addedAt: 0,
+        });
+      }
+    } catch { /* no drop folder yet */ }
+    dropCache = { at: t, list };
+    return list;
+  };
+
   return {
     load() {
       loaded ??= (async () => {
@@ -83,12 +121,13 @@ export function createStickerStore(options: { readonly directory: string; readon
       })();
       return loaded;
     },
-    list: () => items,
+    list: () => [...items, ...dropped()],
     find(query) {
       const q = cleanName(query).toLowerCase();
       if (!q) return undefined;
-      return items.find(s => s.name.toLowerCase() === q)
-        ?? items.find(s => s.name.toLowerCase().includes(q) || s.tags.some(t => t.toLowerCase() === q));
+      const all = [...items, ...dropped()];
+      return all.find(s => s.name.toLowerCase() === q)
+        ?? all.find(s => s.name.toLowerCase().includes(q) || s.tags.some(t => t.toLowerCase() === q));
     },
     add(image, name, tags, addedBy) {
       return serialized(async () => {
@@ -124,7 +163,7 @@ export function createStickerStore(options: { readonly directory: string; readon
         return true;
       });
     },
-    read: sticker => readFile(join(dir, sticker.file)),
+    read: sticker => readFile(sticker.file.startsWith('drop/') ? join(dir, sticker.file) : join(dir, sticker.file)),
   };
 }
 

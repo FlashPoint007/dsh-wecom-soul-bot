@@ -36,6 +36,7 @@ import { createPendingLedger, outcomeOf } from './pending.js';
 import { BIND_EVENT, bindingChanges, createDeliveryService, UNBIND_EVENT, type WecomDeliveryService } from './delivery-service.js';
 import { createSoulStore, validateSoulPatch, type SoulStore } from './soul/store.js';
 import { createStickerStore } from './soul/stickers.js';
+import { createClosingStore } from './soul/closing.js';
 import { join } from 'node:path';
 import {
   STORE_VERSION, type BridgeStateView, type ModelCatalogView, type PresetCatalogView, type StoreOp, type RoutingView,
@@ -160,7 +161,10 @@ export function createRuntime(options: RuntimeOptions): Runtime {
   const router: Router = createRouter({ store, provisioner, log });
   const soulStore = createSoulStore({ directory: options.soulDirectory ?? join(pluginHome(), 'soul') });
   const stickers = createStickerStore({ directory: join(options.soulDirectory ?? join(pluginHome(), 'soul'), 'stickers') });
+  const closing = createClosingStore({ file: join(options.soulDirectory ?? join(pluginHome(), 'soul'), 'closing.json') });
   const soul = createSoulService({
+    closing,
+    sendFile: (chat, buffer, filename) => (bridge ? bridge.sendFile(chat, buffer, filename) : Promise.resolve(false)),
     stickers: {
       store: stickers,
       recentImages: chat => bridge?.recentImages(chat) ?? [],
@@ -507,6 +511,7 @@ export function createRuntime(options: RuntimeOptions): Runtime {
       await store.load();
       await soulStore.load();
       await stickers.load();
+      await closing.load();
       stopSoul = soul.start();
       stopScheduler = scheduler.start();
       lastBindings = store.bindings();

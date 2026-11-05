@@ -108,6 +108,8 @@ export interface Bridge {
   recentImages(chat: string): readonly { buffer: Buffer; mediaType: string }[];
   /** Upload one image and send it to a chat as a WeCom image message. */
   sendImage(chat: string, image: { buffer: Buffer; mediaType: string }, filename: string): Promise<boolean>;
+  /** Upload one file and send it to a chat as a WeCom file message. */
+  sendFile(chat: string, buffer: Buffer, filename: string): Promise<boolean>;
 }
 
 export function createBridge(deps: BridgeDeps): Bridge {
@@ -756,6 +758,19 @@ export function createBridge(deps: BridgeDeps): Bridge {
         return ok;
       } catch (error) {
         journal.write({ event: 'wecom.send.image', level: 'warn', chatId: chat, error });
+        return false;
+      }
+    },
+    async sendFile(chat, buffer, filename) {
+      if (closed || !client.uploadMedia || !client.sendMediaMessage) return false;
+      try {
+        const uploaded = await client.uploadMedia(buffer, { type: 'file', filename });
+        const ack = await client.sendMediaMessage(chat, 'file', uploaded.media_id) as { errcode?: number } | undefined;
+        const ok = !(typeof ack?.errcode === 'number' && ack.errcode !== 0);
+        journal.write({ event: 'wecom.send.file', level: ok ? 'info' : 'warn', chatId: chat, filename, bytes: buffer.length, response: ackSummary(ack) });
+        return ok;
+      } catch (error) {
+        journal.write({ event: 'wecom.send.file', level: 'warn', chatId: chat, filename, error });
         return false;
       }
     },

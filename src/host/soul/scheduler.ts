@@ -113,7 +113,9 @@ export function createSoulScheduler(options: SoulSchedulerOptions): SoulSchedule
       journal.write({ event: 'soul.proactive.roll', hit: false, roll, chance: s.proactiveChance });
       return;
     }
-    const targets = soul.owners().map(id => options.bindingFor('user:' + id)).filter((b): b is BindingRecord => Boolean(b));
+    // A chat the persona just closed ("good night") stays quiet through its cool-down.
+    const targets = soul.owners().map(id => options.bindingFor('user:' + id))
+      .filter((b): b is BindingRecord => Boolean(b) && !soul.closedRecently('user:' + b!.id));
     if (!targets.length) {
       journal.write({ event: 'soul.proactive.skipped', reason: 'no-owner-private-chat' });
       return;
